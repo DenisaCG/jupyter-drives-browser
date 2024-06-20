@@ -11,6 +11,7 @@ import {
   FileBrowser,
   Uploader
 } from '@jupyterlab/filebrowser';
+import { IStateDB } from '@jupyterlab/statedb';
 
 import {
   createToolbarFactory,
@@ -26,7 +27,7 @@ import { Drive } from './s3contents';
 
 import { DriveIcon } from './icons';
 import { FilenameSearcher, IScore } from '@jupyterlab/ui-components';
-import { Token } from '@lumino/coreutils';
+import { ReadonlyPartialJSONObject, Token } from '@lumino/coreutils';
 import { S3ClientConfig } from '@aws-sdk/client-s3';
 
 /**
@@ -55,6 +56,11 @@ const FILE_DIALOG_CLASS = 'jp-FileDialog';
  * The class name added for the new drive label in the switch drive dialog.
  */
 const SWITCH_DRIVE_TITLE_CLASS = 'jp-new-drive-title';
+
+/**
+ * The ID used for saving the drive name to the persistent state databse.
+ */
+const id = 'jupydrive-s3:drive-name-id';
 
 /**
  * A promise that resolves to S3 authentication credentials.
@@ -108,12 +114,13 @@ const defaultFileBrowser: JupyterFrontEndPlugin<IDefaultFileBrowser> = {
   id: 'jupydrive-s3:default-file-browser',
   description: 'The default file browser factory provider',
   provides: IDefaultFileBrowser,
-  requires: [IFileBrowserFactory, IS3Auth],
+  requires: [IFileBrowserFactory, IS3Auth, IStateDB],
   optional: [IRouter, JupyterFrontEnd.ITreeResolver, ILabShell],
   activate: async (
     app: JupyterFrontEnd,
     fileBrowserFactory: IFileBrowserFactory,
     s3auth: IS3Auth,
+    state: IStateDB,
     router: IRouter | null,
     tree: JupyterFrontEnd.ITreeResolver | null,
     labShell: ILabShell | null
@@ -129,6 +136,26 @@ const defaultFileBrowser: JupyterFrontEndPlugin<IDefaultFileBrowser> = {
 
     app.serviceManager.contents.addDrive(S3Drive);
 
+    // save drive name to the persistent state database
+    // state.save(S3Drive.name, { bucket: S3Drive.name });
+
+    app.restored
+      .then(() => state.fetch(id))
+      .then(value => {
+        if (value) {
+          console.log('Read from state value: ', value);
+          const bucket = (value as ReadonlyPartialJSONObject)[
+            'bucket'
+          ] as string;
+
+          console.log('bucket: ', bucket);
+
+          // if value is stored, change bucket name
+          S3Drive.name = bucket;
+          app.serviceManager.contents.addDrive(S3Drive);
+        }
+      });
+
     // get registered file types
     S3Drive.getRegisteredFileTypes(app);
 
@@ -142,7 +169,7 @@ const defaultFileBrowser: JupyterFrontEndPlugin<IDefaultFileBrowser> = {
       }
     );
 
-    Private.addCommands(app, S3Drive, fileBrowserFactory);
+    Private.addCommands(app, S3Drive, fileBrowserFactory, state);
 
     void Private.restoreBrowser(
       defaultBrowser,
@@ -198,7 +225,7 @@ const toolbarFileBrowser: JupyterFrontEndPlugin<void> = {
             });
           },
           useFuzzyFilter: true,
-          placeholder: 'Filter files by namesss',
+          placeholder: 'Filter files by names',
           forceRefresh: true
         });
         searcher.addClass(FILTERBOX_CLASS);
@@ -367,7 +394,8 @@ namespace Private {
   export function addCommands(
     app: JupyterFrontEnd,
     drive: Drive,
-    factory: IFileBrowserFactory
+    factory: IFileBrowserFactory,
+    state: IStateDB
   ): void {
     const { tracker } = factory;
     app.commands.addCommand(CommandIDs.openChangeDrive, {
@@ -386,6 +414,13 @@ namespace Private {
             drive.name = result.value[0];
             drive.root = result.value[1];
             app.serviceManager.contents.addDrive(drive);
+
+            console.log(
+              'save new drive name to persistent database: ',
+              drive.name
+            );
+            // saving the new drive name to the persistent state database
+            state.save(id, { bucket: drive.name });
           }
         });
       },
